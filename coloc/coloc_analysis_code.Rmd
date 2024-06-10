@@ -1,0 +1,190 @@
+---
+title: "coloc analysis"
+author: "Niina Väljä"
+output:
+  html_document:
+    output_file: "rsid_coloc_results.html"
+    df_print: paged
+---
+
+Code for running colocalization analyses for reviewed SNPs.
+Created 16.5.2024
+
+## Loading required packages
+
+```{r loading_packages}
+library(data.table)
+library(coloc)
+
+```
+
+## Set the parameters
+
+```{r parameters}
+working_dir <- "***"
+
+# List of SNPs including: rsid, chr, bpos
+rsids_filename <- "snps.csv"
+ASD_filename <- "ASD_GWAS_summary.tsv.gz"
+other_filename <- "other_GWAS_summary.tsv.gz"
+
+trait1 <- "ASD"
+trait2 <- "trait_name"
+
+gene <- "genename"
+rsid <- "rs00000"
+
+# 100 000 bp -> +- 50 kb
+window_size <- 100000
+
+```
+
+
+## Input files
+
+```{r input_files}
+setwd(working_dir)
+
+# Reading SNP file
+rsid_file <- fread(file = rsids_filename)
+
+# Reading GWAS files
+
+# Dataset 1 (D1)
+ASD_file <- fread(file = ASD_filename)
+
+# Dataset 2 (D2)
+other_file <- fread(file = other_filename)
+```
+
+
+## Reducing and selecting GWAS SNPs
+
+```{r parameters_for_selection}
+rsid_row <- which(rsid_file$rsid == rsid)
+
+rsid_chr <- rsid_file$chr[[rsid_row]]
+rsid_pos <- rsid_file$pos[[rsid_row]]
+
+pos_min <- rsid_pos - (window_size/2)
+pos_max <- rsid_pos + (window_size/2)
+
+print(rsid)
+print(rsid_chr)
+print(rsid_pos)
+```
+
+```{r selecting_SNPs}
+
+ASD_file_subset <- subset(ASD_file, chr == rsid_chr)
+ASD_file_subset <- subset(ASD_file_subset, bpos <= pos_max)
+ASD_file_subset <- subset(ASD_file_subset, bpos >= pos_min)
+
+other_file_subset <- subset(other_file, chr == rsid_chr)
+other_file_subset <- subset(other_file_subset, bpos <= pos_max)
+other_file_subset <- subset(other_file_subset, bpos >= pos_min)
+```
+
+## Calculating varbeta's
+
+```{r varbeta}
+ASD_file_subset$varbeta <- ((ASD_file_subset$beta^2)*2*ASD_file_subset$freq*(1-ASD_file_subset$freq))
+other_file_subset$varbeta <- ((other_file_subset$beta^2)*2*other_file_subset$freq*(1-other_file_subset$freq))
+
+
+# Removing rows which give error for coloc internal calculations
+# (this might be a coloc bug)
+
+ASD_final_subset <- subset(ASD_file_subset, 
+                          is.na( pnorm( -abs( ASD_file_subset$beta/sqrt(ASD_file_subset$varbeta) ) ) * 2) == FALSE)
+
+other_final_subset <- subset(other_file_subset, 
+                          is.na( pnorm( -abs( other_file_subset$beta/sqrt(other_file_subset$varbeta) ) ) * 2) == FALSE)
+
+```
+
+
+## Harmonizing data
+```{r}
+
+common_snps <- intersect(ASD_final_subset$SNP, other_final_subset$SNP)
+
+
+keep_snps_indices_ASD <- integer(0)
+keep_snps_indices_other <- integer(0)
+
+
+for (snp in common_snps) 
+  {
+  D1_ind <- which(ASD_final_subset$SNP == snp)
+  D2_ind <- which(other_final_subset$SNP == snp)
+  
+  alleles_D1 <- c(ASD_final_subset$ref[D1_ind], ASD_final_subset$alt[D1_ind])
+  alleles_D2 <- c(other_final_subset$ref[D2_ind], other_final_subset$alt[D2_ind])
+  
+  if (alleles_D1[1] == alleles_D2[1] && alleles_D1[2] == alleles_D2[2]) 
+  {
+    keep_snps_indices_ASD <- c(keep_snps_indices_ASD, D1_ind)
+    keep_snps_indices_other <- c(keep_snps_indices_other, D2_ind)
+    
+  } 
+  else if (alleles_D1[1] == alleles_D2[2] && alleles_D1[2] == alleles_D2[1]) {
+    # Swap the alleles and update other_final_subset in place
+    other_final_subset$ref[D2_ind] <- alleles_D1[1]
+    other_final_subset$alt[D2_ind] <- alleles_D1[2]
+    other_final_subset$freq[D2_ind] <- 1 - other_final_subset$freq[D2_ind]
+    other_final_subset$beta[D2_ind] <- -1 * other_final_subset$beta[D2_ind]
+    keep_snps_indices_ASD <- c(keep_snps_indices_ASD, D1_ind)
+    keep_snps_indices_other <- c(keep_snps_indices_other, D2_ind)
+  }
+}
+
+
+ASD_final_subset <- ASD_final_subset[keep_snps_indices_ASD, ]
+other_final_subset <- other_final_subset[keep_snps_indices_other, ]
+
+```
+
+
+
+
+
+## creating coloc.abf inputs
+
+```{r coloc_inputs}
+
+ASD_D1 <- c(list(ASD_final_subset$beta), 
+              list(ASD_final_subset$varbeta), 
+              list(ASD_final_subset$SNP), 
+            list(ASD_final_subset$bpos), 
+            type = "quant", 
+            list(ASD_final_subset$n), 
+            list(ASD_final_subset$pval), 
+            list(ASD_final_subset$freq))
+
+other_D2 <- c(list(other_final_subset$beta), 
+              list(other_final_subset$varbeta), 
+              list(other_final_subset$SNP), 
+            list(other_final_subset$bpos), 
+            type = "quant", 
+            list(other_final_subset$n), 
+            list(other_final_subset$pval), 
+            list(other_final_subset$freq))
+  
+names(ASD_D1) <- c("beta", "varbeta", "snp", "position", "type", "N","pvalues", "MAF")
+names(other_D2) <- c("beta", "varbeta", "snp", "position", "type", "N","pvalues", "MAF")
+ 
+```
+
+
+## coloc.abf and sensitivity analysis
+
+```{r coloc_abf}
+results <- coloc.abf(ASD_D1, other_D2, MAF=NULL, p1 = 1e-04, p2 = 1e-04, p12 = 1e-05)
+print(results)
+
+sensitivity(results, rule="H4 > 0.9", plot.manhattans = TRUE)
+
+```
+
+
