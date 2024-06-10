@@ -1,0 +1,226 @@
+---
+title: "Two sample MR"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+# Two-Sample MR
+
+Updated 22.05.2024
+
+```{r}
+working_dir <- "***"
+
+
+exp_filename <- "***"
+out_filename <- "***"
+
+exp_name <- "XXX"
+out_name <- "YYY"
+
+
+p_lim <- 0.05
+
+r2_lim <- 0.2
+```
+
+```{r}
+library(TwoSampleMR)
+library(data.table)
+setwd(working_dir)
+
+```
+
+## Data preparation
+
+Loading the exposure data 
+
+```{r}
+
+setwd(working_dir)
+exp_raw_full <- fread(file =exp_filename)
+
+```
+
+
+Formatting exposure data and selecting significant SNPs (p-value)
+
+```{r}
+exp_raw <- subset(exp_raw_full,exp_raw_full$pval<p_lim)
+
+exp_raw <- as.data.frame(exp_raw)
+exp_raw$phen <- rep(exp_name, nrow(exp_raw))
+
+exp_dat <- format_data( exp_raw,
+    type = "exposure",
+    snp_col = "SNP",
+    beta_col = "beta",
+    se_col = "se",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    pval_col = "pval",
+    eaf_col = "freq",
+    phenotype_col = "phen",
+    samplesize_col = "n"
+)
+```
+
+
+## Clumping the exposure variables
+
+```{r}
+library(ieugwasr)
+clumped_exp <- clump_data(exp_dat,clump_r2=r2_lim,pop="EAS")
+```
+
+
+## Outcome-data
+
+```{r}
+
+setwd(working_dir)
+out_raw_full <- fread(out_filename)
+
+out_raw <- subset(out_raw_full,out_raw_full$pval<p_lim)
+out_raw <- as.data.frame(out_raw)
+out_raw$phen <- rep(out_name, nrow(out_raw))
+
+out_dat <- format_data( out_raw,
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta",
+    se_col = "se",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    pval_col = "pval",
+    eaf_col = "freq",
+    phenotype_col = "phen",
+    samplesize_col = "n"
+    
+)
+```
+
+## Harmonizing data
+
+```{r}
+harmonized_data <- harmonise_data(clumped_exp,out_dat,action=1)
+harmonized_data
+```
+
+## MR analysis
+
+```{r}
+scatter_name <- paste("scatter_plot_", exp_name, "_", out_name, ".pdf")
+
+pdf(scatter_name)
+
+res <- mr(harmonized_data, )
+
+mr_scatter_plot(res[3, ], harmonized_data)
+dev.off()
+```
+
+## Sensitivity analysis
+
+### Heterogenity
+
+```{r}
+mr_pleiotropy_res <- mr_pleiotropy_test(harmonized_data)
+mr_pleiotropy_res
+```
+
+## Single SNP and leave-one-out (not performed due to the large amount of SNPs)
+
+### Single SNP MR
+
+```{r}
+
+res_single <- mr_singlesnp(harmonized_data)
+res_single
+
+```
+
+### leave-one-out MR
+
+```{r}
+
+res_loo <- mr_leaveoneout(harmonized_data)
+res_loo
+
+```
+
+## Visualization
+
+### Scatter plot
+
+```{r}
+res <- mr(harmonized_data)
+p1 <- mr_scatter_plot(res, harmonized_data)
+p1[[1]]
+```
+
+### LOO visual
+
+```{r}
+res_loo <- mr_leaveoneout(harmonized_data)
+p3 <- mr_leaveoneout_plot(res_loo)
+p3[[1]]
+```
+
+### Funnel plot (single)
+
+```{r}
+res_single <- mr_singlesnp(harmonized_data)
+p4 <- mr_funnel_plot(res_single)
+p4[[1]]
+```
+
+## MR Steiger directionality test
+
+```{r}
+harmonized_data$"r.outcome" <- get_r_from_lor(
+  harmonized_data$"beta.outcome",
+  harmonized_data$"eaf.outcome",
+  45383,
+  132032,
+  0.26,
+  model = "logit",
+  correction = FALSE
+)
+
+out <- directionality_test(harmonized_data)
+out
+```
+
+## Identifying the lead SNPs
+
+```{r}
+sc_plot <- mr_scatter_plot(res, harmonized_data)
+sc_plot[[1]]
+
+# Smallest outcome pval
+lead_out_pval <- which(harmonized_data$pval.outcome == min(harmonized_data$pval.outcome)  )
+print("Lead outcome Pval:")
+harmonized_data$SNP[[lead_out_pval]]
+harmonized_data$pval.outcome[[lead_out_pval]]
+harmonized_data[lead_out_pval, ]
+
+# Smallest exposure pval
+lead_exp_pval <- which(harmonized_data$pval.exposure == min(harmonized_data$pval.exposure)  )
+print("Lead exposure Pval:")
+harmonized_data$SNP[[lead_exp_pval]]
+harmonized_data$pval.exposure[[lead_exp_pval]]
+harmonized_data[lead_exp_pval, ]
+
+
+# Smallest pval for single SNP analysis
+print("Lead single SNP Pval:")
+n_max <- nrow(res_single) -2
+lead_single_ind <- which(res_single$p == min(res_single$p[1:n_max])  )
+res_single$SNP[[lead_single_ind]]
+res_single$p[[lead_single_ind]]
+print(res_single[lead_single_ind, ])
+```
